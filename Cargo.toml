@@ -1,0 +1,5 @@
+[package]
+
+name = "signed-buffer"
+version = "0.0.1"
+authors = ["Rudi Benkovic <rudi.benkovic@gmail.com>"]
