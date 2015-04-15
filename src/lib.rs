@@ -59,19 +59,15 @@ impl<'a> SignedBuffer<'a> {
 			buffer[buffer.len() - self.trailer_magic_bytes.len() + i] = self.trailer_magic_bytes[i];
 		}
 
-		let checksum = self.hash(buffer);
+		let checksum = self.hash(payload);
 		let checksum_start_addr = buffer.len() - self.trailer_magic_bytes.len() - self.hash_size_bytes() as usize;
 		
-
 		{
-			buffer[checksum_start_addr + 0] = ((checksum & (0xff00000000000000)) >> 7) as u8;
-			buffer[checksum_start_addr + 1] = ((checksum & (0x00ff000000000000)) >> 6) as u8;
-			buffer[checksum_start_addr + 2] = ((checksum & (0x0000ff0000000000)) >> 5) as u8;
-			buffer[checksum_start_addr + 3] = ((checksum & (0x000000ff00000000)) >> 4) as u8;
-			buffer[checksum_start_addr + 4] = ((checksum & (0x00000000ff000000)) >> 3) as u8;
-			buffer[checksum_start_addr + 5] = ((checksum & (0x0000000000ff0000)) >> 2) as u8;
-			buffer[checksum_start_addr + 6] = ((checksum & (0x000000000000ff00)) >> 1) as u8;
-			buffer[checksum_start_addr + 7] = ((checksum & (0x00000000000000ff)) >> 0) as u8;
+			let c = ByteSerializer::serialize_u64(checksum);
+
+			for i in 0..c.len() {
+				buffer[checksum_start_addr + i] = c[i];
+			}
 		}
 
 		/*
@@ -82,11 +78,14 @@ impl<'a> SignedBuffer<'a> {
 		}
 		*/
 
-		buffer[self.header_magic_bytes.len() + 0] = ((payload.len() & 0xff00 << 0) >> 1) as u8;
-		buffer[self.header_magic_bytes.len() + 1] = ((payload.len() & 0xff << 0) >> 0) as u8;
+		{
+			let l = ByteSerializer::serialize_u16(payload.len() as u16);
+			buffer[self.header_magic_bytes.len() + 0] = l[0];
+			buffer[self.header_magic_bytes.len() + 1] = l[1];
+		}
 
 		for i in 0..payload.len() {
-			buffer[2 + self.header_magic_bytes.len() + i] = payload[i];
+			buffer[self.header_magic_bytes.len() + 2 + i] = payload[i];
 		}
 
 
@@ -110,43 +109,35 @@ impl<'a> SignedBuffer<'a> {
 			}
 		}
 
-		let payload_bytes = {
-			let mut p: u16 = 0;
-			p += ((buffer[self.header_magic_bytes.len() + 0] as u16) << 1);
-			p += ((buffer[self.header_magic_bytes.len() + 1] as u16) << 0);
-
-			p
-		};
-
+		let payload_bytes = ByteSerializer::deserialize_u16(&[buffer[self.header_magic_bytes.len() + 0], buffer[self.header_magic_bytes.len() + 1]]);
 
 		let s = self.header_magic_bytes.len() + 2;
 		let payload = Payload {
 			payload: &buffer[s..(s + payload_bytes as usize)]
 		};
 
-		let checksum_in_payload = {
-			let mut c: u64 = 0;
+		let checksum_in_buffer = {
 			let mut s = buffer.len() - self.trailer_magic_bytes.len() - self.hash_size_bytes() as usize;
-			
-			c += (buffer[s + 0] as u64) << 7;
-			c += (buffer[s + 1] as u64) << 6;
-			c += (buffer[s + 2] as u64) << 5;
-			c += (buffer[s + 3] as u64) << 4;
-			c += (buffer[s + 4] as u64) << 3;
-			c += (buffer[s + 5] as u64) << 2;
-			c += (buffer[s + 6] as u64) << 1;
-			c += (buffer[s + 7] as u64) << 0;
 
-			c
+			let b = [
+				buffer[s + 0],
+				buffer[s + 1],
+				buffer[s + 2],
+				buffer[s + 3],
+				buffer[s + 4],
+				buffer[s + 5],
+				buffer[s + 6],
+				buffer[s + 7]
+			];
+
+			ByteSerializer::deserialize_u64(&b)
 		};
 
 		let checksum = self.hash(payload.payload);
 		
-		if checksum_in_payload != checksum {
+		if checksum != checksum_in_buffer {
 			return Err(PayloadRetrievalError::InvalidHash);
 		}
-		
-
 
 		return Ok(payload);
 	}
@@ -170,6 +161,47 @@ impl<'a> SignedBuffer<'a> {
 	}
 }
 
+pub struct ByteSerializer;
+impl ByteSerializer {
+	fn serialize_uint(val: u64, output: &mut [u8]) {
+		let l = output.len();
+		for i in 0..l {
+			let r = val >> ((l-i-1) * 8);
+			output[i] = (r & 0xff) as u8;
+		}
+	}
+
+	fn deserialize_uint(bytes: &[u8]) -> u64 {
+		let mut ret = 0 as u64;
+		
+		let l = bytes.len();
+		for i in 0..l {
+			ret += (bytes[i] as u64) << ((l-i-1) * 8);
+		}
+
+		ret
+	}
+
+	pub fn serialize_u64(val: u64) -> [u8; 8] {
+		let mut b = [0 as u8; 8];
+		ByteSerializer::serialize_uint(val, b.as_mut_slice());
+		b
+	}
+
+	pub fn deserialize_u64(bytes: &[u8; 8]) -> u64 {
+		ByteSerializer::deserialize_uint(bytes.as_slice())
+	}
+
+	pub fn serialize_u16(val: u16) -> [u8; 2] {
+		let mut b = [0 as u8; 2];
+		ByteSerializer::serialize_uint(val as u64, b.as_mut_slice());
+		b
+	}
+
+	pub fn deserialize_u16(bytes: &[u8; 2]) -> u16 {
+		ByteSerializer::deserialize_uint(bytes.as_slice()) as u16
+	}
+}
 
 
 
@@ -187,6 +219,32 @@ mod tests {
 	use std::prelude::*;
 
 	#[test]
+	fn bytes() {
+		{
+			let num = 2418509812123184;
+			let s = ByteSerializer::serialize_u64(num);
+
+			assert_eq!(num, ByteSerializer::deserialize_u64(&s));
+		}
+
+		{
+			let num = 421894;
+			let s = ByteSerializer::serialize_u16(num);
+
+			assert_eq!(num, ByteSerializer::deserialize_u16(&s));
+		}
+
+		{
+			let b = [26, 124, 142, 98, 167, 23, 116, 11];
+			let num = ByteSerializer::deserialize_u64(&b);
+			let d = ByteSerializer::serialize_u64(num);
+
+			assert_eq!(b, d);
+		}
+
+	}
+
+	#[test]
 	fn roundtrip() {
 		let header = [100, 200];
 		let trailer = [200, 100];
@@ -199,19 +257,23 @@ mod tests {
 		};
 
 		let mut buffer = [0; 128];
+		let payload = [0, 100, 200, 60, 123, 125, 255, 0, 0, 255];
 
-		let u = signed_buffer.sign([0, 100, 200].as_slice(), buffer.as_mut_slice());
+		let u = signed_buffer.sign(payload.as_slice(), buffer.as_mut_slice());
 		println!("{:?}", u);
-		//println!("buffer: {:?}", buffer);
-		println!("buffer:");
+		println!("buffer: {:?}", buffer.as_slice());
+		//println!("buffer:");
+		/*
 		for i in 0..buffer.len() {
 			println!("buffer[{}] = {}", i, buffer[i]);
 		}
+		*/
 
 
-		let retrieved = signed_buffer.retrieve(buffer.as_slice());
-		println!("retrieved");
-		println!("{:?}", retrieved);
+		let retrieved = signed_buffer.retrieve(buffer.as_slice());		
+		println!("retrieved: {:?}", retrieved);
+
+		assert_eq!(payload.as_slice(), retrieved.unwrap().payload);
 	}
 }
 
