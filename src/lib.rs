@@ -43,8 +43,13 @@ pub struct Payload<'a> {
 	pub payload: &'a[u8]
 }
 
+#[derive(Debug)]
+pub struct SignedBufferResult {
+	pub buffer_data_length: u32
+}
+
 impl<'a> SignedBuffer<'a> {
-	pub fn sign(&self, payload: &[u8], buffer: &mut [u8]) -> Result<(), BufferSignatureError> {
+	pub fn sign(&self, payload: &[u8], buffer: &mut [u8]) -> Result<SignedBufferResult, BufferSignatureError> {
 		
 		match self.size {
 			// exact size match is required
@@ -67,8 +72,6 @@ impl<'a> SignedBuffer<'a> {
 				return Err(BufferSignatureError::PayloadTooLarge);
 			}
 		}
-
-		
 
 		// clear
 		for i in 0..buffer.len() {
@@ -120,7 +123,7 @@ impl<'a> SignedBuffer<'a> {
 			pos
 		};
 
-		Ok(())
+		Ok(SignedBufferResult { buffer_data_length: signed_buffer_len as u32 })
 	}
 
 	pub fn retrieve(&'a self, buffer: &'a [u8]) -> Result<Payload, PayloadRetrievalError> {
