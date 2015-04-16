@@ -12,15 +12,21 @@ use core::hash::SipHasher;
 
 #[derive(Debug)]
 pub struct SignedBuffer<'a> {
-	pub size_bytes: u16,
+	pub size: BufferSize,
 	pub header_magic_bytes: &'a[u8],
 	pub trailer_magic_bytes: &'a[u8]
 }
 
 #[derive(Debug)]
+pub enum BufferSize {
+	Fixed { bytes: u32 },
+	Dynamic { max_bytes: u32 }
+}
+
+#[derive(Debug)]
 pub enum BufferSignatureError {
 	PayloadTooLarge,
-	BufferInvalidSize
+	BufferInvalidSize { expected: u32, actual: u32 }
 }
 
 #[derive(Debug)]
@@ -28,7 +34,8 @@ pub enum PayloadRetrievalError {
 	InvalidBufferSize,
 	InvalidHeader,
 	InvalidTrailer,
-	InvalidHash
+	InvalidHash,
+	InvalidPayloadSizeMarker
 }
 
 #[derive(Debug)]
@@ -38,105 +45,134 @@ pub struct Payload<'a> {
 
 impl<'a> SignedBuffer<'a> {
 	pub fn sign(&self, payload: &[u8], buffer: &mut [u8]) -> Result<(), BufferSignatureError> {
-		if buffer.len() != self.size_bytes as usize {
-			return Err(BufferSignatureError::BufferInvalidSize);
+		
+		match self.size {
+			// exact size match is required
+			BufferSize::Fixed { bytes: bytes } => {
+				if buffer.len() != bytes as usize {
+					return Err(BufferSignatureError::BufferInvalidSize { expected: bytes, actual: buffer.len() as u32 });
+				}
+			},
+			_ => {}
+		}
+		
+		// check if payload fits into our buffer
+		{
+			let max_size = match self.size {
+				BufferSize::Fixed { bytes: bytes } => bytes,
+				BufferSize::Dynamic { .. } => buffer.len() as u32
+			};
+
+			if payload.len() > (max_size as usize - self.padding_size_bytes() as usize) {
+				return Err(BufferSignatureError::PayloadTooLarge);
+			}
 		}
 
-		if payload.len() > (self.size_bytes as usize - self.padding_size_bytes() as usize) {
-			return Err(BufferSignatureError::PayloadTooLarge);
-		}
+		
 
 		// clear
 		for i in 0..buffer.len() {
 			buffer[i] = 0;
 		}
 
-		for i in 0..self.header_magic_bytes.len() {
-			buffer[i] = self.header_magic_bytes[i];
-		}
+		// construct the signed buffer
+		let signed_buffer_len = {
+			let mut pos = 0;
 
-		for i in 0..self.trailer_magic_bytes.len() {
-			buffer[buffer.len() - self.trailer_magic_bytes.len() + i] = self.trailer_magic_bytes[i];
-		}
-
-		let checksum = self.hash(payload);
-		let checksum_start_addr = buffer.len() - self.trailer_magic_bytes.len() - self.hash_size_bytes() as usize;
-		
-		{
-			let c = ByteSerializer::serialize_u64(checksum);
-
-			for i in 0..c.len() {
-				buffer[checksum_start_addr + i] = c[i];
+			// header
+			for i in 0..self.header_magic_bytes.len() {
+				buffer[pos] = self.header_magic_bytes[i];
+				pos += 1;
 			}
-		}
 
-		/*
-		for i in 0..self.hash_size_bytes() as usize {
-			let r = checksum.rotate_right((self.hash_size_bytes() as usize - i) as u32);
-			buffer[checksum_start_addr + i as usize] = (r & 0xff) as u8;
-			//buffer]
-		}
-		*/
+			// payload length
+			{
+				let l = ByteSerializer::serialize_u16(payload.len() as u16);
+				buffer[pos] = l[0];
+				pos += 1;
+				buffer[pos] = l[1];
+				pos += 1;
+			}
 
-		{
-			let l = ByteSerializer::serialize_u16(payload.len() as u16);
-			buffer[self.header_magic_bytes.len() + 0] = l[0];
-			buffer[self.header_magic_bytes.len() + 1] = l[1];
-		}
+			// copy the payload
+			for i in 0..payload.len() {
+				buffer[pos] = payload[i];
+				pos += 1;
+			}
 
-		for i in 0..payload.len() {
-			buffer[self.header_magic_bytes.len() + 2 + i] = payload[i];
-		}
+			// payload checksum
+			{
+				let checksum = self.hash(payload);								
+				let c = ByteSerializer::serialize_u64(checksum);
 
+				for i in 0..c.len() {
+					buffer[pos] = c[i];
+					pos += 1;
+				}
+			}
+
+			// trailer
+			for i in 0..self.trailer_magic_bytes.len() {
+				buffer[pos] = self.trailer_magic_bytes[i];
+				pos += 1;
+			}
+
+			pos
+		};
 
 		Ok(())
 	}
 
 	pub fn retrieve(&'a self, buffer: &'a [u8]) -> Result<Payload, PayloadRetrievalError> {
+		/*
 		if buffer.len() != self.size_bytes as usize {
 			return Err(PayloadRetrievalError::InvalidBufferSize);
 		}
+		*/
+		let mut pos = 0;
 
 		for i in 0..self.header_magic_bytes.len() {
-			if buffer[i] != self.header_magic_bytes[i] {
+			if buffer[pos] != self.header_magic_bytes[i] {
 				return Err(PayloadRetrievalError::InvalidHeader);
 			}
+			pos += 1;
 		}
 
-		for i in 0..self.trailer_magic_bytes.len() {
-			if buffer[buffer.len() - self.trailer_magic_bytes.len() + i] != self.trailer_magic_bytes[i] {
-				return Err(PayloadRetrievalError::InvalidTrailer);	
-			}
-		}
+		let payload_bytes = ByteSerializer::deserialize_u16(&[buffer[pos], buffer[pos + 1]]);
+		pos += 2;
+		// todo: validate size!
 
-		let payload_bytes = ByteSerializer::deserialize_u16(&[buffer[self.header_magic_bytes.len() + 0], buffer[self.header_magic_bytes.len() + 1]]);
-
-		let s = self.header_magic_bytes.len() + 2;
 		let payload = Payload {
-			payload: &buffer[s..(s + payload_bytes as usize)]
+			payload: &buffer[pos..(payload_bytes as usize + pos)]
 		};
+		pos += payload_bytes as usize;
 
 		let checksum_in_buffer = {
-			let mut s = buffer.len() - self.trailer_magic_bytes.len() - self.hash_size_bytes() as usize;
-
 			let b = [
-				buffer[s + 0],
-				buffer[s + 1],
-				buffer[s + 2],
-				buffer[s + 3],
-				buffer[s + 4],
-				buffer[s + 5],
-				buffer[s + 6],
-				buffer[s + 7]
+				buffer[pos + 0],
+				buffer[pos + 1],
+				buffer[pos + 2],
+				buffer[pos + 3],
+				buffer[pos + 4],
+				buffer[pos + 5],
+				buffer[pos + 6],
+				buffer[pos + 7]
 			];
+			pos += 8;
 
 			ByteSerializer::deserialize_u64(&b)
 		};
 
-		let checksum = self.hash(payload.payload);
-		
+		let checksum = self.hash(payload.payload);		
 		if checksum != checksum_in_buffer {
 			return Err(PayloadRetrievalError::InvalidHash);
+		}
+
+		for i in 0..self.trailer_magic_bytes.len() {
+			if buffer[pos] != self.trailer_magic_bytes[i] {
+				return Err(PayloadRetrievalError::InvalidTrailer);	
+			}
+			pos += 1;
 		}
 
 		return Ok(payload);
@@ -152,11 +188,18 @@ impl<'a> SignedBuffer<'a> {
 		hash.finish()
 	}
 
-	fn padding_size_bytes(&self) -> u16 {
-		(2 + self.header_magic_bytes.len() + self.trailer_magic_bytes.len() + self.hash_size_bytes() as usize) as u16
+	pub fn signed_buffer_size(&self, payload: &[u8]) -> u32 {
+		match self.size {
+			BufferSize::Fixed { bytes: bytes } => bytes,
+			BufferSize::Dynamic { .. } => self.padding_size_bytes() + payload.len() as u32
+		}
 	}
 
-	fn hash_size_bytes(&self) -> u16 {
+	fn padding_size_bytes(&self) -> u32 {
+		(self.header_magic_bytes.len() + 2 + self.hash_size_bytes() as usize + self.trailer_magic_bytes.len()) as u32
+	}
+
+	fn hash_size_bytes(&self) -> u32 {
 		8
 	}
 }
@@ -251,7 +294,7 @@ mod tests {
 
 
 		let signed_buffer = SignedBuffer {
-			size_bytes: 128,
+			size: BufferSize::Fixed { bytes: 128 },
 			header_magic_bytes: header.as_slice(),
 			trailer_magic_bytes: trailer.as_slice()
 		};
@@ -268,7 +311,6 @@ mod tests {
 			println!("buffer[{}] = {}", i, buffer[i]);
 		}
 		*/
-
 
 		let retrieved = signed_buffer.retrieve(buffer.as_slice());		
 		println!("retrieved: {:?}", retrieved);
