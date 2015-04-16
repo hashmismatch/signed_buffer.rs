@@ -129,38 +129,36 @@ impl<'a> SignedBuffer<'a> {
 			return Err(PayloadRetrievalError::InvalidBufferSize);
 		}
 		*/
-		let mut pos = 0;
+		let mut b = buffer;
 
-		for i in 0..self.header_magic_bytes.len() {
-			if buffer[pos] != self.header_magic_bytes[i] {
-				return Err(PayloadRetrievalError::InvalidHeader);
-			}
-			pos += 1;
+		if !b.starts_with(self.header_magic_bytes) {
+			return Err(PayloadRetrievalError::InvalidHeader);
 		}
+		b = &b[self.header_magic_bytes.len()..];
 
-		let payload_bytes = ByteSerializer::deserialize_u16(&[buffer[pos], buffer[pos + 1]]);
-		pos += 2;
+		let payload_bytes = ByteSerializer::deserialize_u16(&[b[0], b[1]]);
+		b = &b[2..];
 		// todo: validate size!
 
 		let payload = Payload {
-			payload: &buffer[pos..(payload_bytes as usize + pos)]
+			payload: &b[0..(payload_bytes as usize)]
 		};
-		pos += payload_bytes as usize;
+		b = &b[(payload_bytes as usize)..];
 
 		let checksum_in_buffer = {
-			let b = [
-				buffer[pos + 0],
-				buffer[pos + 1],
-				buffer[pos + 2],
-				buffer[pos + 3],
-				buffer[pos + 4],
-				buffer[pos + 5],
-				buffer[pos + 6],
-				buffer[pos + 7]
+			let cb = [
+				b[0],
+				b[1],
+				b[2],
+				b[3],
+				b[4],
+				b[5],
+				b[6],
+				b[7]
 			];
-			pos += 8;
 
-			ByteSerializer::deserialize_u64(&b)
+			b = &b[8..];
+			ByteSerializer::deserialize_u64(&cb)
 		};
 
 		let checksum = self.hash(payload.payload);		
@@ -168,12 +166,10 @@ impl<'a> SignedBuffer<'a> {
 			return Err(PayloadRetrievalError::InvalidHash);
 		}
 
-		for i in 0..self.trailer_magic_bytes.len() {
-			if buffer[pos] != self.trailer_magic_bytes[i] {
-				return Err(PayloadRetrievalError::InvalidTrailer);	
-			}
-			pos += 1;
+		if !b.starts_with(self.trailer_magic_bytes) {
+			return Err(PayloadRetrievalError::InvalidTrailer);	
 		}
+		b = &b[self.trailer_magic_bytes.len()..];
 
 		return Ok(payload);
 	}
