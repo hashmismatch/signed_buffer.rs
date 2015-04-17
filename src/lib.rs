@@ -126,53 +126,50 @@ impl<'a> SignedBuffer<'a> {
 		Ok(SignedBufferResult { buffer_data_length: signed_buffer_len as u32 })
 	}
 
-	pub fn retrieve(&'a self, buffer: &'a [u8]) -> Result<Payload, PayloadRetrievalError> {
-		/*
-		if buffer.len() != self.size_bytes as usize {
-			return Err(PayloadRetrievalError::InvalidBufferSize);
-		}
-		*/
-		let mut b = buffer;
+	pub fn retrieve(&'a self, buffer: &'a [u8]) -> Result<Payload, PayloadRetrievalError> {		
 
-		if !b.starts_with(self.header_magic_bytes) {
+		//let mut b = buffer;
+		let mut b = PointedSliceReader::new(buffer);
+
+		// header
+		let header = b.get_next_slice(self.header_magic_bytes.len());
+		if header.is_none() { return Err(PayloadRetrievalError::InvalidHeader); }
+		let header = header.unwrap();
+		if header != self.header_magic_bytes {
 			return Err(PayloadRetrievalError::InvalidHeader);
 		}
-		b = &b[self.header_magic_bytes.len()..];
 
-		let payload_bytes = ByteSerializer::deserialize_u16(&[b[0], b[1]]);
-		b = &b[2..];
-		// todo: validate size!
+		// payload length
+		let payload_bytes = ByteSerializer::deserialize_u16_opt(b.get_next_slice(2));
+		if payload_bytes.is_none() { return Err(PayloadRetrievalError::InvalidPayloadSizeMarker); }
+		let payload_bytes = payload_bytes.unwrap();		
+		// todo: validate size, even before going for the payload itself
 
+		// payload itself
+		let payload_data = b.get_next_slice(payload_bytes as usize);
+		if payload_data.is_none() { return Err(PayloadRetrievalError::InvalidPayloadSizeMarker); }
+		let payload_data = payload_data.unwrap();
 		let payload = Payload {
-			payload: &b[0..(payload_bytes as usize)]
-		};
-		b = &b[(payload_bytes as usize)..];
-
-		let checksum_in_buffer = {
-			let cb = [
-				b[0],
-				b[1],
-				b[2],
-				b[3],
-				b[4],
-				b[5],
-				b[6],
-				b[7]
-			];
-
-			b = &b[8..];
-			ByteSerializer::deserialize_u64(&cb)
+			payload: payload_data
 		};
 
+
+		// payload checksum
+		let checksum_in_buffer = ByteSerializer::deserialize_u64_opt(b.get_next_slice(8));
+		if checksum_in_buffer.is_none() { return Err(PayloadRetrievalError::InvalidHash); }
+		let checksum_in_buffer = checksum_in_buffer.unwrap();
 		let checksum = self.hash(payload.payload);		
 		if checksum != checksum_in_buffer {
 			return Err(PayloadRetrievalError::InvalidHash);
 		}
 
-		if !b.starts_with(self.trailer_magic_bytes) {
+		// buffer trailer
+		let trailer = b.get_next_slice(self.trailer_magic_bytes.len());
+		if trailer.is_none() { return Err(PayloadRetrievalError::InvalidTrailer); }
+		let trailer = trailer.unwrap();
+		if trailer != self.trailer_magic_bytes {
 			return Err(PayloadRetrievalError::InvalidTrailer);	
 		}
-		b = &b[self.trailer_magic_bytes.len()..];
 
 		return Ok(payload);
 	}
@@ -203,7 +200,7 @@ impl<'a> SignedBuffer<'a> {
 	}
 }
 
-pub struct PointedSliceReader<'a, T> where T: 'a {
+pub struct PointedSliceReader<'a, T> where T: 'a + Copy {
 	slice: &'a[T],
 	pos: usize
 }
@@ -226,17 +223,6 @@ impl<'a, T> PointedSliceReader<'a, T> where T: 'a + Copy {
 
 		ret
 	}
-
-	/*
-	pub fn write_and_advance(&mut self, data: &[T]) {
-		let mut s = self.slice.as_mut_slice();
-
-		for i in 0..data.len() {
-			s[self.pos] = data[i];
-			self.pos += 1;
-		}
-	}
-	*/
 }
 
 pub struct PointedSliceWriter {
@@ -247,7 +233,11 @@ impl PointedSliceWriter {
 		PointedSliceWriter { pos: 0 }
 	}
 
-	pub fn write_and_advance<T>(&mut self, target: &mut[T], data: &[T]) where T: Copy {
+	pub fn write_and_advance<T>(&mut self, target: &mut[T], data: T) where T: Copy {
+		self.write_slice_and_advance(target, &[data].as_slice());
+	}
+
+	pub fn write_slice_and_advance<T>(&mut self, target: &mut[T], data: &[T]) where T: Copy {
 		for i in 0..data.len() {
 			if self.pos >= target.len() {
 				return;
@@ -256,6 +246,10 @@ impl PointedSliceWriter {
 			target[self.pos] = data[i];
 			self.pos += 1;
 		}
+	}
+
+	pub fn get_pos(&self) -> usize {
+		self.pos
 	}
 }
 
@@ -289,9 +283,16 @@ impl ByteSerializer {
 		b
 	}
 
-	pub fn deserialize_u64(bytes: &[u8; 8]) -> u64 {
-		ByteSerializer::deserialize_uint(bytes.as_slice())
+	pub fn deserialize_u64(bytes: &[u8]) -> Option<u64> {
+		if bytes.len() != 8 { return None; }
+		Some(ByteSerializer::deserialize_uint(bytes.as_slice()))
 	}
+
+	pub fn deserialize_u64_opt(bytes: Option<&[u8]>) -> Option<u64> {
+		if bytes.is_none() { return None; }
+		ByteSerializer::deserialize_u64(bytes.unwrap())
+	}
+
 
 	pub fn serialize_u16(val: u16) -> [u8; 2] {
 		let mut b = [0 as u8; 2];
@@ -299,9 +300,15 @@ impl ByteSerializer {
 		b
 	}
 
-	pub fn deserialize_u16(bytes: &[u8; 2]) -> u16 {
-		ByteSerializer::deserialize_uint(bytes.as_slice()) as u16
+	pub fn deserialize_u16(bytes: &[u8]) -> Option<u16> {
+		if bytes.len() != 2 { return None; }
+		Some(ByteSerializer::deserialize_uint(bytes.as_slice()) as u16)
 	}
+
+	pub fn deserialize_u16_opt(bytes: Option<&[u8]>) -> Option<u16> {
+		if bytes.is_none() { return None; }
+		ByteSerializer::deserialize_u16(bytes.unwrap())
+	}	
 }
 
 
@@ -349,17 +356,12 @@ mod tests {
 			buffer.push(0);
 		}
 		
-		{
-			w.write_and_advance(buffer.as_mut_slice(), [1, 2, 3].as_slice());
-		}
-		{
-			w.write_and_advance(buffer.as_mut_slice(), [4, 5, 6].as_slice());
-		}
-		{
-			w.write_and_advance(buffer.as_mut_slice(), [7, 8, 9].as_slice());
-		}
+		w.write_slice_and_advance(buffer.as_mut_slice(), [1, 2, 3].as_slice());
+		w.write_slice_and_advance(buffer.as_mut_slice(), [4, 5, 6].as_slice());
+		w.write_slice_and_advance(buffer.as_mut_slice(), [7, 8, 9].as_slice());
 
 		assert_eq!([1,2,3,4,5,6,7,8,9].as_slice(), buffer.as_slice());
+		assert_eq!(9, w.get_pos());
 	}
 
 	#[test]
@@ -368,19 +370,19 @@ mod tests {
 			let num = 2418509812123184;
 			let s = ByteSerializer::serialize_u64(num);
 
-			assert_eq!(num, ByteSerializer::deserialize_u64(&s));
+			assert_eq!(num, ByteSerializer::deserialize_u64(&s).unwrap());
 		}
 
 		{
 			let num = 421894;
 			let s = ByteSerializer::serialize_u16(num);
 
-			assert_eq!(num, ByteSerializer::deserialize_u16(&s));
+			assert_eq!(num, ByteSerializer::deserialize_u16(&s).unwrap());
 		}
 
 		{
 			let b = [26, 124, 142, 98, 167, 23, 116, 11];
-			let num = ByteSerializer::deserialize_u64(&b);
+			let num = ByteSerializer::deserialize_u64(&b).unwrap();
 			let d = ByteSerializer::serialize_u64(num);
 
 			assert_eq!(b, d);
