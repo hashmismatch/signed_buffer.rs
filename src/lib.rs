@@ -80,47 +80,25 @@ impl<'a> SignedBuffer<'a> {
 
 		// construct the signed buffer
 		let signed_buffer_len = {
-			let mut pos = 0;
+			let mut bw = PointedSliceWriter::new();
 
 			// header
-			for i in 0..self.header_magic_bytes.len() {
-				buffer[pos] = self.header_magic_bytes[i];
-				pos += 1;
-			}
+			bw.write_slice_and_advance(buffer, self.header_magic_bytes);
 
 			// payload length
-			{
-				let l = ByteSerializer::serialize_u16(payload.len() as u16);
-				buffer[pos] = l[0];
-				pos += 1;
-				buffer[pos] = l[1];
-				pos += 1;
-			}
+			bw.write_slice_and_advance(buffer, ByteSerializer::serialize_u16(payload.len() as u16).as_slice());
 
 			// copy the payload
-			for i in 0..payload.len() {
-				buffer[pos] = payload[i];
-				pos += 1;
-			}
+			bw.write_slice_and_advance(buffer, payload);
 
 			// payload checksum
-			{
-				let checksum = self.hash(payload);								
-				let c = ByteSerializer::serialize_u64(checksum);
-
-				for i in 0..c.len() {
-					buffer[pos] = c[i];
-					pos += 1;
-				}
-			}
+			let checksum = self.hash(payload);
+			bw.write_slice_and_advance(buffer, ByteSerializer::serialize_u64(checksum).as_slice());
 
 			// trailer
-			for i in 0..self.trailer_magic_bytes.len() {
-				buffer[pos] = self.trailer_magic_bytes[i];
-				pos += 1;
-			}
+			bw.write_slice_and_advance(buffer, self.trailer_magic_bytes);
 
-			pos
+			bw.get_pos()
 		};
 
 		Ok(SignedBufferResult { buffer_data_length: signed_buffer_len as u32 })
