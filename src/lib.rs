@@ -10,6 +10,8 @@ use core::prelude::*;
 use core::hash::Hasher;
 use core::hash::SipHasher;
 
+use collections::vec::*;
+
 #[derive(Debug)]
 pub struct SignedBuffer<'a> {
 	pub size: BufferSize,
@@ -40,12 +42,19 @@ pub enum PayloadRetrievalError {
 
 #[derive(Debug)]
 pub struct Payload<'a> {
-	pub payload: &'a[u8]
+	pub payload: &'a[u8],
+	pub position: DetectedSignedBuffer
 }
 
 #[derive(Debug)]
 pub struct SignedBufferResult {
 	pub buffer_data_length: u32
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct DetectedSignedBuffer {
+	pub from: usize,
+	pub to: usize
 }
 
 impl<'a> SignedBuffer<'a> {
@@ -74,9 +83,11 @@ impl<'a> SignedBuffer<'a> {
 		}
 
 		// clear
+		/*
 		for i in 0..buffer.len() {
 			buffer[i] = 0;
 		}
+		*/
 
 		// construct the signed buffer
 		let signed_buffer_len = {
@@ -127,16 +138,13 @@ impl<'a> SignedBuffer<'a> {
 		let payload_data = b.get_next_slice(payload_bytes as usize);
 		if payload_data.is_none() { return Err(PayloadRetrievalError::InvalidPayloadSizeMarker); }
 		let payload_data = payload_data.unwrap();
-		let payload = Payload {
-			payload: payload_data
-		};
 
 
 		// payload checksum
 		let checksum_in_buffer = ByteSerializer::deserialize_u64_opt(b.get_next_slice(8));
 		if checksum_in_buffer.is_none() { return Err(PayloadRetrievalError::InvalidHash); }
 		let checksum_in_buffer = checksum_in_buffer.unwrap();
-		let checksum = self.hash(payload.payload);		
+		let checksum = self.hash(payload_data);		
 		if checksum != checksum_in_buffer {
 			return Err(PayloadRetrievalError::InvalidHash);
 		}
@@ -148,6 +156,14 @@ impl<'a> SignedBuffer<'a> {
 		if trailer != self.trailer_magic_bytes {
 			return Err(PayloadRetrievalError::InvalidTrailer);	
 		}
+
+		let payload = Payload {
+			payload: payload_data,
+			position: DetectedSignedBuffer {
+				from: 0,
+				to: b.get_pos()
+			}
+		};
 
 		return Ok(payload);
 	}
@@ -176,6 +192,33 @@ impl<'a> SignedBuffer<'a> {
 	fn hash_size_bytes(&self) -> u32 {
 		8
 	}
+
+	pub fn detect_regions(&self, buffer: &[u8]) -> Vec<DetectedSignedBuffer> {
+		let mut ret = Vec::new();
+
+		let mut pos = 0;
+		while pos < buffer.len() {
+
+			let s = &buffer[pos..];
+			if s.starts_with(self.header_magic_bytes) {
+				// try to decode it straight, it's faster
+				let pl = self.retrieve(s);
+				match pl {
+					Ok(Payload { position: p,.. } ) => { 						
+						ret.push(DetectedSignedBuffer { from: pos + p.from, to: pos + p.to });
+						pos += p.to - p.from;						
+					},
+					Err(_) => {
+						pos += 1;
+					}
+				}
+			} else {
+				pos += 1;
+			}
+		}
+
+		ret
+	}
 }
 
 pub struct PointedSliceReader<'a, T> where T: 'a + Copy {
@@ -201,6 +244,10 @@ impl<'a, T> PointedSliceReader<'a, T> where T: 'a + Copy {
 
 		ret
 	}
+
+	pub fn get_pos(&self) -> usize {
+		self.pos
+	}	
 }
 
 pub struct PointedSliceWriter {
@@ -366,6 +413,38 @@ mod tests {
 			assert_eq!(b, d);
 		}
 
+	}
+
+	#[test]
+	fn detection() {
+		let header = [100, 200];
+		let trailer = [200, 100];
+
+
+		let signed_buffer = SignedBuffer {
+			size: BufferSize::Dynamic { max_bytes: 128 },
+			header_magic_bytes: header.as_slice(),
+			trailer_magic_bytes: trailer.as_slice()
+		};
+
+		let payload = [100, 200, 200, 100, 100, 200, 200, 200, 100, 200, 100];
+		
+		let mut buffer = [0; 128];
+
+		signed_buffer.sign(payload.as_slice(), buffer.as_mut_slice()).unwrap();
+		signed_buffer.sign(payload.as_slice(), buffer[60..].as_mut_slice()).unwrap();
+
+		buffer[58] = 100;
+		buffer[59] = 200;
+
+		let detected = signed_buffer.detect_regions(buffer.as_slice());
+		println!("detected buffers: {:?}", detected);
+
+		for r in detected {
+			let b = &buffer[(r.from)..(r.to)];
+			let p = signed_buffer.retrieve(b.as_slice()).unwrap();
+			assert_eq!(p.payload, payload.as_slice());
+		}
 	}
 
 	#[test]
