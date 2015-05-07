@@ -1,6 +1,6 @@
 #![no_std]
 
-#![feature(core, alloc, no_std, macro_reexport, unboxed_closures, collections, convert)]
+#![feature(core, alloc, no_std, macro_reexport, unboxed_closures, collections, convert, hash)]
 
 extern crate core;
 extern crate alloc;
@@ -9,6 +9,7 @@ extern crate collections;
 use core::prelude::*;
 use core::hash::Hasher;
 use core::hash::SipHasher;
+use core::array::FixedSizeArray;
 
 use collections::vec::*;
 
@@ -310,7 +311,7 @@ impl ByteSerializer {
 
 	pub fn deserialize_u64(bytes: &[u8]) -> Option<u64> {
 		if bytes.len() != 8 { return None; }
-		Some(ByteSerializer::deserialize_uint(bytes.as_slice()))
+		Some(ByteSerializer::deserialize_uint(bytes))
 	}
 
 	pub fn deserialize_u64_opt(bytes: Option<&[u8]>) -> Option<u64> {
@@ -327,7 +328,7 @@ impl ByteSerializer {
 
 	pub fn deserialize_u16(bytes: &[u8]) -> Option<u16> {
 		if bytes.len() != 2 { return None; }
-		Some(ByteSerializer::deserialize_uint(bytes.as_slice()) as u16)
+		Some(ByteSerializer::deserialize_uint(bytes) as u16)
 	}
 
 	pub fn deserialize_u16_opt(bytes: Option<&[u8]>) -> Option<u16> {
