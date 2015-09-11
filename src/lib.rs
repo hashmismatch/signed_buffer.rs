@@ -1,12 +1,15 @@
 #![no_std]
 
-#![feature(core, alloc, no_std, macro_reexport, unboxed_closures, collections, convert, hash)]
+#![feature(alloc)]
+#![feature(no_std)]
+#![feature(macro_reexport)]
+#![feature(unboxed_closures)]
+#![feature(collections)]
+#![feature(fixed_size_array)]
 
-extern crate core;
 extern crate alloc;
 extern crate collections;
 
-use core::prelude::*;
 use core::hash::Hasher;
 use core::hash::SipHasher;
 use core::array::FixedSizeArray;
@@ -349,9 +352,8 @@ extern crate std;
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use core::prelude::*;
-	use std::prelude::*;
 	use collections::vec::Vec;
+	use core::array::FixedSizeArray;
 
 	#[test]
 	fn pointed_slice_reader() {
@@ -378,15 +380,15 @@ mod tests {
 	fn pointed_slice_writer() {
 		let mut w = PointedSliceWriter::new();
 		let mut buffer = Vec::new();
-		for i in 0..9 {
+		for _ in 0..9 {
 			buffer.push(0);
 		}
 		
-		w.write_slice_and_advance(buffer.as_mut_slice(), [1, 2, 3].as_slice());
-		w.write_slice_and_advance(buffer.as_mut_slice(), [4, 5, 6].as_slice());
-		w.write_slice_and_advance(buffer.as_mut_slice(), [7, 8, 9].as_slice());
+		w.write_slice_and_advance(&mut buffer, &[1, 2, 3]);
+		w.write_slice_and_advance(&mut buffer, &[4, 5, 6]);
+		w.write_slice_and_advance(&mut buffer, &[7, 8, 9]);
 
-		assert_eq!([1,2,3,4,5,6,7,8,9].as_slice(), buffer.as_slice());
+		assert_eq!(&[1,2,3,4,5,6,7,8,9], &*buffer);
 		assert_eq!(9, w.get_pos());
 	}
 
@@ -432,8 +434,8 @@ mod tests {
 		
 		let mut buffer = [0; 128];
 
-		signed_buffer.sign(payload.as_slice(), buffer.as_mut_slice()).unwrap();
-		signed_buffer.sign(payload.as_slice(), buffer[60..].as_mut_slice()).unwrap();
+		signed_buffer.sign(payload.as_slice(), &mut buffer).unwrap();
+		signed_buffer.sign(payload.as_slice(), &mut buffer[60..]).unwrap();
 
 		buffer[58] = 100;
 		buffer[59] = 200;
@@ -443,8 +445,8 @@ mod tests {
 
 		for r in detected {
 			let b = &buffer[(r.from)..(r.to)];
-			let p = signed_buffer.retrieve(b.as_slice()).unwrap();
-			assert_eq!(p.payload, payload.as_slice());
+			let p = signed_buffer.retrieve(&b).unwrap();
+			assert_eq!(p.payload, &payload);
 		}
 	}
 
