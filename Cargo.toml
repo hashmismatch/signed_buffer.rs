@@ -1,5 +1,20 @@
 [package]
-
 name = "signed_buffer"
-version = "0.0.1"
+version = "0.2.0"
 authors = ["Rudi Benkovic <rudi.benkovic@gmail.com>"]
+
+[dependencies]
+siphasher = "0.2.1"
+
+[dependencies.packed_struct]
+git = "https://github.com/hashmismatch/packed_struct.rs"
+default-features = false
+
+[dependencies.packed_struct_codegen]
+git = "https://github.com/hashmismatch/packed_struct.rs"
+default-features = false
+
+[features]
+default = ["std"]
+std = ["packed_struct/std", "packed_struct_codegen/std"]
+no_std = ["packed_struct/core_collections", "packed_struct_codegen/core_collections"]
